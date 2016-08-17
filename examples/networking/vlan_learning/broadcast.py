@@ -15,12 +15,13 @@ num_clients = 2
 
 ipr = IPRoute()
 ipdb = IPDB(nl=ipr)
-#parent = TC_H_CLSACT
+parent = TC_H_CLSACT
 
 broadcast  = BPF(src_file="broadcast.c", debug = 0)
 egress     = broadcast.load_func("egress_replication", BPF.SCHED_CLS)
 ingress    = broadcast.load_func("incr_counter",BPF.SCHED_CLS)
-conf       = broadcast.get_table("conf")
+response   = broadcast.load_func("ingress_response",BPF.SCHED_CLS)
+ports      = broadcast.get_table("ports")
 
 class DavideSimulation(Simulation):
     def __init__(self, ipdb):
@@ -35,26 +36,30 @@ class DavideSimulation(Simulation):
 
         ipr.tc("add", "clsact", v_bpf["index"])
 
-        # add egress clsact
+        # add ingress/egress clsact
         ipr.tc("add-filter", "bpf", v_bpf["index"], ":1", fd=ingress.fd, name=ingress.name, parent="ffff:fff2", classid=1, direct_action = True)
         ipr.tc("add-filter", "bpf", v_bpf["index"], ":1", fd=egress.fd, name=egress.name, parent="ffff:fff3", classid=1, direct_action= True)
         mac = "02:00:00:00:00:01"
         self._create_ns("client0", in_ifc = in_interface, ipaddr="172.16.1.100/24", macaddr=mac)
 
+        ports[c_int(0)] = c_int(v_bpf["index"])
         receivers = []
         for i in range(0, num_clients):
             receivers.append(self._create_ns("worker%d" % i, ipaddr="172.16.1.%d/24" % (i+1)))
 
-        port_count = 0
+        port_count = 1
         for receiver in receivers:
-            conf[c_int(port_count)] = c_int(receiver[1].index)
+            ipr.tc("add", "clsact", receiver[1].index)
+            ipr.tc("add-filter", "bpf", receiver[1].index, ":1", fd=response.fd, name=response.name, parent="ffff:fff2", classid=1, direct_action = True)
+            print(receiver[1].index)
+            ports[c_int(port_count)] = c_int(receiver[1].index)
             port_count = port_count + 1
 
-        with self.ipdb.create(ifname="bridge", kind="bridge") as br:
-            br.add_port("worker0a")
+        #with self.ipdb.create(ifname="bridge", kind="bridge") as br:
+            #br.add_port("worker0a")
             #br.add_port("worker1a")
-            br.add_port("clientB")
-            br.up()
+            #br.add_port("clientB")
+            #br.up()
 
 try:
     sim = DavideSimulation(ipdb)
@@ -72,9 +77,9 @@ try:
 #        print("mac %.12x rx pkts = %u, rx bytes = %u" % (k, v[0], v[1]))
 #        print("                 tx pkts = %u, tx bytes = %u" % (v[2], v[3]))
 finally:
-    for i in ipr.link_lookup(ifname="bridge"):
-        ipr.link('set', index=i, state='down')
-        ipr.link("delete", index=i)     
+    #for i in ipr.link_lookup(ifname="bridge"):
+        #ipr.link('set', index=i, state='down')
+        #ipr.link("delete", index=i)     
     if "sim" in locals():
         sim.release()
     ipdb.release()
